@@ -2,6 +2,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/LogicalAxisOverlap.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/SearchCost.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveScore.h"
@@ -844,8 +845,13 @@ static void dumpSearchModule(llvm::StringRef header, ModuleOp module,
   if (score)
     llvm::errs() << ", score=" << *score;
   llvm::errs() << "):\n";
-  if (!note.empty())
-    llvm::errs() << "// " << note << "\n";
+  if (!note.empty()) {
+    std::string commented = note.str();
+    for (size_t at = commented.find('\n'); at != std::string::npos;
+         at = commented.find('\n', at + 4))
+      commented.replace(at, 1, "\n// ");
+    llvm::errs() << "// " << commented << "\n";
+  }
   module.print(llvm::errs());
   llvm::errs() << "\n";
 }
@@ -865,6 +871,15 @@ static std::string describeCost(const CollectiveCostSummary &cost) {
   return text;
 }
 
+// One line summarizing the compute term: its total and the kernel count.
+static std::string describeCompute(const SearchCost &cost) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << "compute cost: total=" << cost.compute << " over " << cost.numKernels
+     << " kernels";
+  return text;
+}
+
 class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   ModuleOp originalModule;
   bool dumpCandidates;
@@ -873,7 +888,7 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
   StrategyCompleterBase &completer;
-  CollectiveCostModel costModel;
+  SearchCostModel &costModel;
   size_t numScored = 0;
   size_t numPlanFailures = 0;
   std::string firstPlanFailure;
@@ -883,18 +898,18 @@ public:
                  bool disableVerifier, bool failOnBadCandidate,
                  bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
-                 StrategyCompleterBase &completer)
+                 StrategyCompleterBase &completer, SearchCostModel &costModel)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
         failOnBadCandidate(failOnBadCandidate),
-        sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {}
+        sawBadCandidate(sawBadCandidate), queue(queue), completer(completer),
+        costModel(costModel) {}
 
   // Search statistics: candidates scored, how many of those lowered but had a
   // collective that could not be planned, and the first such reason.
   size_t getNumScored() const { return numScored; }
   size_t getNumPlanFailures() const { return numPlanFailures; }
   const std::string &getFirstPlanFailure() const { return firstPlanFailure; }
-  const CollectiveCostModel &getCostModel() const { return costModel; }
 
   // Applies and lowers the candidate's decisions on a clone, then scores it.
   // Pipeline:
@@ -905,12 +920,12 @@ public:
   //   onto a clone
   // - Lowering pipeline (buildDistributedSearchLoweringPipeline) : lowers
   //   the fully-decided clone to atomic distributed.Collective ops
-  // - CollectiveCostModel : costs the lowered clone
+  // - SearchCostModel : costs the lowered clone (SearchCost.h)
   //
   // The score is the negated sum of the lowered clone's collective durations
-  // (higher is better, as the beam maximizes). It models communication only:
-  // collectives are costed in isolation at uniform mesh parameters, are never
-  // overlapped with each other, and computation is free.
+  // (higher is better, as the beam maximizes). Collectives are costed in
+  // isolation at uniform mesh parameters and are never overlapped with each
+  // other. Computation is free unless the compute stand-in is on.
   //
   // A candidate is infeasible, and scores -infinity, if its lowering pipeline
   // fails or any of its collectives cannot be planned.
@@ -928,14 +943,16 @@ public:
     double result = -std::numeric_limits<double>::infinity();
     std::string note;
     if (pipelineOk) {
-      CollectiveCostSummary cost = costModel.summarize(*clonedModule);
+      SearchCost cost = costModel.estimate(*clonedModule);
       if (cost.feasible()) {
-        result = 0.0 - cost.total;
-        note = describeCost(cost);
+        result = 0.0 - cost.total();
+        note = describeCost(cost.collective);
+        if (cost.computeModelled)
+          note += "\n" + describeCompute(cost);
       } else {
         if (numPlanFailures++ == 0)
-          firstPlanFailure = cost.failureReason;
-        note = "collective planning failed: " + cost.failureReason;
+          firstPlanFailure = cost.collective.failureReason;
+        note = "collective planning failed: " + cost.collective.failureReason;
       }
     }
 
@@ -1016,9 +1033,10 @@ struct DistributedSearchStrategiesPass
     StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
                                        moduleOp.getLoc());
     bool sawBadCandidate = false;
+    SummedCostModel costModel(kflopCoeff, opIntercept);
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
                           failOnBadCandidate, sawBadCandidate, queue,
-                          completer);
+                          completer, costModel);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
     driver.run();
@@ -1031,8 +1049,8 @@ struct DistributedSearchStrategiesPass
     if (logProgress)
       llvm::errs() << "distributed-search-strategies: scored "
                    << scorer.getNumScored() << " candidates; collective plans "
-                   << scorer.getCostModel().cacheMisses() << " computed, "
-                   << scorer.getCostModel().cacheHits() << " reused\n";
+                   << costModel.collectiveModel().cacheMisses() << " computed, "
+                   << costModel.collectiveModel().cacheHits() << " reused\n";
 
     // An infeasible collective scores its candidate -infinity, so a search
     // that hits one everywhere would silently degrade; report the count once.
