@@ -4,6 +4,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/SearchCost.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/SearchMetrics.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/SearchStrategyRunners.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveScore.h"
@@ -1061,7 +1062,70 @@ struct DistributedSearchStrategiesPass
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer,
                                                 metrics.get());
-    driver.run();
+    // Both are compared against one spelling below, so a typo would otherwise
+    // pick the default and the run would look like the one asked for.
+    if (uctBackup != "mean" && uctBackup != "max") {
+      moduleOp.emitError() << "distributed-search-strategies: unknown "
+                              "uct-backup '"
+                           << uctBackup << "' (known: mean, max)";
+      return signalPassFailure();
+    }
+    if (surrogateTarget != "log" && surrogateTarget != "linear") {
+      moduleOp.emitError() << "distributed-search-strategies: unknown "
+                              "surrogate-target '"
+                           << surrogateTarget << "' (known: log, linear)";
+      return signalPassFailure();
+    }
+    // One row per strategy. A new strategy is a runner and a row here.
+    using Runner = std::function<std::shared_ptr<StrategySearchNode>()>;
+    SearchMetrics<StrategySearchNode> *m = metrics.get();
+    const bool &stop = sawBadCandidate;
+    const std::pair<llvm::StringRef, Runner> strategies[] = {
+        {"beam",
+         [&] {
+           driver.run();
+           return driver.getBest();
+         }},
+        {"random",
+         [&] {
+           return runRandom(initialNode, explorer, scorer, m, searchSamples,
+                            searchSeed, stop);
+         }},
+        {"mcts",
+         [&] {
+           return runMcts(initialNode, explorer, scorer, m, searchSamples,
+                          searchSeed, uctC, uctBackup == "max", surrogatePrior,
+                          surrogateTrain, surrogateTarget != "linear", stop);
+         }},
+        {"twostage",
+         [&] {
+           unsigned train = std::min<unsigned>(surrogateTrain, searchSamples);
+           unsigned k = searchSamples - train;
+           unsigned pool = surrogatePool ? surrogatePool : k * 10;
+           // Ranking fewer candidates than are evaluated would leave part of
+           // the budget unspent, which makes a matched-budget comparison a lie.
+           if (pool < k) {
+             moduleOp.emitWarning()
+                 << "distributed-search-strategies: surrogate-pool " << pool
+                 << " is below the " << k
+                 << " candidates to evaluate; raising it to " << k;
+             pool = k;
+           }
+           return runTwoStage(initialNode, explorer, scorer, m, searchSamples,
+                              searchSeed, train, pool,
+                              surrogateTarget != "linear", surrogateDump, stop);
+         }},
+    };
+    const auto *strategy = llvm::find_if(
+        strategies, [&](const auto &s) { return s.first == searchStrategy; });
+    if (strategy == std::end(strategies)) {
+      moduleOp.emitError() << "distributed-search-strategies: unknown "
+                              "search-strategy '"
+                           << searchStrategy
+                           << "' (known: beam, random, mcts, twostage)";
+      return signalPassFailure();
+    }
+    std::shared_ptr<StrategySearchNode> best = strategy->second();
 
     if (sawBadCandidate) {
       signalPassFailure();
@@ -1097,7 +1161,6 @@ struct DistributedSearchStrategiesPass
       }
     }
 
-    auto best = driver.getBest();
 
     if (dumpBest) {
       if (best) {

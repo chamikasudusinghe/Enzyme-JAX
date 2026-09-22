@@ -426,7 +426,17 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
     Option<"failOnBadCandidate", "fail-on-bad-candidate", "bool", "false", "Fail this pass outright the first time any scored candidate's lowering pipeline fails, instead of silently scoring it -infinity and letting the search route around it. Normal operation should leave this off, since a real search is expected to explore and discard plenty of infeasible candidates; turn it on for tests/debugging that want a lowering bug to surface immediately (with the offending candidate's IR printed) rather than being masked by the search finding a different, working candidate elsewhere. Default: false">,
     Option<"kflopCoeff", "kflop-coeff", "double", "0.0", "Compute stand-in: cost per KFLOP of a dot in a kernel body. 0.5 matches the roofline's default device rate. 0 turns compute off. Default: 0.0">,
     Option<"opIntercept", "op-intercept", "double", "0.0", "Compute stand-in: fixed cost per op in a kernel body. Default: 0.0">,
-    Option<"metricsOut", "metrics-out", "std::string", "\"\"", "Write per-candidate search metrics as CSV to this path: cost by term, lineage and rank. Empty collects nothing. Default: empty">
+    Option<"metricsOut", "metrics-out", "std::string", "\"\"", "Write per-candidate search metrics as CSV to this path: cost by term, lineage and rank. Empty collects nothing. Default: empty">,
+    Option<"searchStrategy", "search-strategy", "std::string", "\"beam\"", "Which search to run: 'beam', 'random', 'mcts' or 'twostage'. search-samples is the evaluation budget for the last three. Default: beam">,
+    Option<"searchSamples", "search-samples", "unsigned", "1000", "Evaluation budget for search-strategy=random, mcts and twostage. Default: 1000">,
+    Option<"searchSeed", "search-seed", "unsigned", "0", "Random seed for stochastic strategies, so a run is reproducible from its command line. Default: 0">,
+    Option<"uctC", "uct-c", "double", "0.707", "MCTS exploration constant, applied to rewards normalised to [0,1]. Larger values explore more; 0 is pure exploitation. Default: 0.707">,
+    Option<"uctBackup", "uct-backup", "std::string", "\"mean\"", "MCTS value backup: 'mean' for standard UCT, or 'max' for single-player MCTS. Default: mean">,
+    Option<"surrogateTrain", "surrogate-train", "unsigned", "256", "How much of the evaluation budget to spend fitting the surrogate, for search-strategy=twostage and for surrogate-prior. Default: 256">,
+    Option<"surrogatePool", "surrogate-pool", "unsigned", "0", "For search-strategy=twostage: how many candidates to rank with the surrogate before exactly evaluating the best K. Ranking needs no IR lowering, so the pool should exceed K. 0 means 10x K. Default: 0">,
+    Option<"surrogatePrior", "surrogate-prior", "double", "0.0", "Weight of a surrogate prior on MCTS's UCB score, PUCT-style. 0 leaves MCTS unchanged. Default: 0.0">,
+    Option<"surrogateDump", "surrogate-dump", "std::string", "\"\"", "Write the fitted surrogate weights and their training data to this path, so the fit can be checked against another solver. Default: empty">,
+    Option<"surrogateTarget", "surrogate-target", "std::string", "\"log\"", "What the surrogate regresses on: 'log', which keeps every prediction positive, or 'linear'. Default: log">
   ];
 }
 
