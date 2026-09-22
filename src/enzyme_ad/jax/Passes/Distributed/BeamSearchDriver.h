@@ -52,6 +52,23 @@ public:
 };
 
 /**
+ * Passive observer of the search, for metrics. An implementation that mutates
+ * a node or a score is a bug.
+ */
+template <typename NodeType> class BeamSearchObserver {
+public:
+  using NodePtr = std::shared_ptr<NodeType>;
+  virtual ~BeamSearchObserver() = default;
+
+  // The only point where the parent relationship is known.
+  virtual void onScored(const NodePtr &child, const NodePtr &parent) = 0;
+  // A node came off the queue already finalized.
+  virtual void onFinalized(const NodePtr &node) = 0;
+  // The search is over; `best` may be null if nothing finalized.
+  virtual void onSearchComplete(const NodePtr &best) = 0;
+};
+
+/**
  * Build a beam search driver independent of things like actual
  * search strategy, decision space, heuristics, etc. The driver should
  * allow us to tune the search without needing to mess with much
@@ -78,16 +95,20 @@ public:
   using ScorerType = BeamSearchScorerBase<NodeType>;
   using ExplorerType = BeamSearchExplorerBase<NodeType>;
 
+  using ObserverType = BeamSearchObserver<NodeType>;
+
 protected:
   QueueType &queue;
   ScorerType &scorer;
   ExplorerType &explorer;
+  ObserverType *observer; // optional; null means uninstrumented
   std::vector<NodePtr> finalizedCandidates;
   NodePtr bestFinalizedCandidate;
 
 public:
-  BeamSearchDriver(QueueType &queue, ScorerType &scorer, ExplorerType &explorer)
-      : queue(queue), scorer(scorer), explorer(explorer){};
+  BeamSearchDriver(QueueType &queue, ScorerType &scorer, ExplorerType &explorer,
+                   ObserverType *observer = nullptr)
+      : queue(queue), scorer(scorer), explorer(explorer), observer(observer){};
 
   NodePtr getBest() { return bestFinalizedCandidate; }
   llvm::ArrayRef<NodePtr> getFinalized() { return finalizedCandidates; }
@@ -102,6 +123,8 @@ public:
             node->score > bestFinalizedCandidate->score) {
           bestFinalizedCandidate = node;
         }
+        if (observer)
+          observer->onFinalized(node);
       } else {
         // In-progress candidates must be expanded
         std::vector<NodePtr> newCandidates =
@@ -109,10 +132,15 @@ public:
         for (NodePtr newNode : newCandidates) {
           double newScore = scorer.score(newNode);
           newNode->score = newScore;
+          // Before pushing: the queue may drop this node immediately.
+          if (observer)
+            observer->onScored(newNode, node);
           queue.push(newNode);
         }
       }
     }
+    if (observer)
+      observer->onSearchComplete(bestFinalizedCandidate);
   }
 };
 

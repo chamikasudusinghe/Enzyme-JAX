@@ -425,7 +425,8 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
     Option<"logProgress", "log-progress", "bool", "false", "Log the deepest and shallowest axis-decision depth reached across the beam at each generation turnover, out of the total axis count. Useful for tracking how far a long-running search has gotten. Default: false">,
     Option<"failOnBadCandidate", "fail-on-bad-candidate", "bool", "false", "Fail this pass outright the first time any scored candidate's lowering pipeline fails, instead of silently scoring it -infinity and letting the search route around it. Normal operation should leave this off, since a real search is expected to explore and discard plenty of infeasible candidates; turn it on for tests/debugging that want a lowering bug to surface immediately (with the offending candidate's IR printed) rather than being masked by the search finding a different, working candidate elsewhere. Default: false">,
     Option<"kflopCoeff", "kflop-coeff", "double", "0.0", "Compute stand-in: cost per KFLOP of a dot in a kernel body. 0.5 matches the roofline's default device rate. 0 turns compute off. Default: 0.0">,
-    Option<"opIntercept", "op-intercept", "double", "0.0", "Compute stand-in: fixed cost per op in a kernel body. Default: 0.0">
+    Option<"opIntercept", "op-intercept", "double", "0.0", "Compute stand-in: fixed cost per op in a kernel body. Default: 0.0">,
+    Option<"metricsOut", "metrics-out", "std::string", "\"\"", "Write per-candidate search metrics as CSV to this path: cost by term, lineage and rank. Empty collects nothing. Default: empty">
   ];
 }
 

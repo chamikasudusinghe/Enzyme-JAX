@@ -3,6 +3,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/SearchCost.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/SearchMetrics.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveScore.h"
@@ -889,6 +890,7 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   BeamSearchQueueBase<StrategySearchNode> &queue;
   StrategyCompleterBase &completer;
   SearchCostModel &costModel;
+  SearchMetrics<StrategySearchNode> *metrics;
   size_t numScored = 0;
   size_t numPlanFailures = 0;
   std::string firstPlanFailure;
@@ -898,12 +900,13 @@ public:
                  bool disableVerifier, bool failOnBadCandidate,
                  bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
-                 StrategyCompleterBase &completer, SearchCostModel &costModel)
+                 StrategyCompleterBase &completer, SearchCostModel &costModel,
+                 SearchMetrics<StrategySearchNode> *metrics = nullptr)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
         failOnBadCandidate(failOnBadCandidate),
         sawBadCandidate(sawBadCandidate), queue(queue), completer(completer),
-        costModel(costModel) {}
+        costModel(costModel), metrics(metrics) {}
 
   // Search statistics: candidates scored, how many of those lowered but had a
   // collective that could not be planned, and the first such reason.
@@ -954,6 +957,8 @@ public:
           firstPlanFailure = cost.collective.failureReason;
         note = "collective planning failed: " + cost.collective.failureReason;
       }
+      if (metrics)
+        metrics->recordCost(node, result, cost);
     }
 
     if (dumpCandidates)
@@ -1025,8 +1030,24 @@ struct DistributedSearchStrategiesPass
                      << "\n";
       };
     }
+    std::unique_ptr<SearchMetrics<StrategySearchNode>> metrics;
+    if (!metricsOut.empty())
+      metrics =
+          std::make_unique<SearchMetrics<StrategySearchNode>>(metricsOut);
+    // Ranks need a whole generation, which only the queue sees.
+    auto generationCallback = progressLogger;
+    if (metrics) {
+      auto *m = metrics.get();
+      generationCallback =
+          [m, progressLogger](
+              llvm::ArrayRef<std::shared_ptr<StrategySearchNode>> generation) {
+            if (progressLogger)
+              progressLogger(generation);
+            m->onGenerationFormed(generation);
+          };
+    }
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize,
-                                                          progressLogger);
+                                                          generationCallback);
     queue.push(initialNode);
     StrategyExplorer explorer(overlap, builder, physicalAxes,
                               moduleOp.getLoc(), logProgress);
@@ -1036,9 +1057,10 @@ struct DistributedSearchStrategiesPass
     SummedCostModel costModel(kflopCoeff, opIntercept);
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
                           failOnBadCandidate, sawBadCandidate, queue,
-                          completer, costModel);
+                          completer, costModel, metrics.get());
 
-    BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer);
+    BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer,
+                                                metrics.get());
     driver.run();
 
     if (sawBadCandidate) {
