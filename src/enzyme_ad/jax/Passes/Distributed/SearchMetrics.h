@@ -30,12 +30,18 @@ public:
   explicit SearchMetrics(llvm::StringRef path) : path(path) {}
 
   // Called by the scorer, the only place a cost breakdown exists.
-  void recordCost(const NodePtr &node, double score, const SearchCost &cost) {
+  // `assignment` describes the completed candidate that was actually lowered
+  // and priced, which is not `node` itself: the scorer completes a scratch
+  // clone first. Empty when the caller does not supply one.
+  void recordCost(const NodePtr &node, double score, const SearchCost &cost,
+                  llvm::StringRef assignment = {}) {
     evaluations++;
     Record &r = recordFor(node);
     r.score = score;
     r.cost = cost;
     r.hasCost = true;
+    if (!assignment.empty())
+      r.assignment = assignment.str();
   }
 
   void recordSurrogate(const NodePtr &node, double predicted) {
@@ -123,6 +129,11 @@ private:
     long long childIndex = -1;
     double surrogate = 0;
     bool hasSurrogate = false;
+    // Canonical decisions of the priced candidate: per logical axis, which
+    // factors it took. Unlike the root-to-leaf childIndex sequence this does
+    // not depend on the path taken to reach the assignment, which is what an
+    // analysis over axes rather than over decision steps needs.
+    std::string assignment;
   };
 
   std::string path;
@@ -157,7 +168,7 @@ private:
     os << "id,parent_id,child_index,depth,finalized,is_best,score,collective,"
           "compute,total,num_collectives,num_kernels,plan_failed,best_rank,"
           "worst_rank,generations,surrogate,collective_bytes,"
-          "collective_bytes_x_participants\n";
+          "collective_bytes_x_participants,assignment\n";
     for (const Record &r : records) {
       os << r.id << ',' << r.parentId << ',' << r.childIndex << ',' << r.depth
          << ',' << (r.finalized ? 1 : 0) << ',' << (r.isBest ? 1 : 0) << ',';
@@ -183,7 +194,7 @@ private:
            << r.cost.collectiveBytesXParticipants;
       else
         os << ',';
-      os << '\n';
+      os << ',' << r.assignment << '\n';
     }
     // Not a data row. MCTS re-scores nodes, so rows understate evaluations.
     os << "# evaluations=" << evaluations

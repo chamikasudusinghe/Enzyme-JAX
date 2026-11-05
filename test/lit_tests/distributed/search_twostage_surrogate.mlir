@@ -12,9 +12,10 @@
 // rollouts, so the best alone would not notice a broken pool.
 
 // The log target keeps every surrogate prediction positive. The surrogate is
-// the third-last column; at least one row has one and none is negative.
-// POSITIVE: ,{{[0-9.e+]+}},{{[0-9]+}},{{[0-9]+}}{{$}}
-// POSITIVE-NOT: ,-{{[0-9.e+]+}},{{[0-9]+}},{{[0-9]+}}{{$}}
+// the fourth-last column, ahead of the two byte counts and the assignment;
+// at least one row has one and none is negative.
+// POSITIVE: ,{{[0-9.e+]+}},{{[0-9]+}},{{[0-9]+}},{{[^,]*}}{{$}}
+// POSITIVE-NOT: ,-{{[0-9.e+]+}},{{[0-9]+}},{{[0-9]+}},{{[^,]*}}{{$}}
 
 module @attention {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>

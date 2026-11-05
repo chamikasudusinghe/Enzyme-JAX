@@ -418,6 +418,114 @@ public:
   }
 };
 
+// Dense ids for the physical mesh axes, in the order findAllPhysicalAxes
+// returns them, so an assignment can say which axis a factor was carved out
+// of and not just how wide it is. Two mesh axes of equal extent cost the
+// same -- the model prices every axis at one bandwidth -- but they are not
+// interchangeable to the overlap constraints, which is what this is for.
+using PhysicalAxisIds = llvm::DenseMap<Value, unsigned>;
+
+static PhysicalAxisIds
+indexPhysicalAxes(llvm::ArrayRef<SharedOpRef<AxisFactorOp>> physicalAxes) {
+  PhysicalAxisIds ids;
+  for (auto [index, factorRef] : llvm::enumerate(physicalAxes)) {
+    auto factor =
+        sharedOpRefToUniqueValue<TypedValue<AxisFactorType>, AxisFactorOp>(
+            factorRef);
+    auto provenance = getFactorProvenanceAxis(factor);
+    if (failed(provenance))
+      continue;
+    ids.try_emplace(Value(*provenance), static_cast<unsigned>(index));
+  }
+  return ids;
+}
+
+// Where one bound factor came from: `p<n>` for a chunk of physical mesh axis
+// n, `L` for a device-local (serialized) extent, `?` when provenance will not
+// resolve.
+static std::string describeFactorSource(TypedValue<AxisFactorType> factor,
+                                        const PhysicalAxisIds &physicalIds) {
+  auto provenance = getFactorProvenanceAxis(factor);
+  if (failed(provenance))
+    return "?";
+  Value axisValue = *provenance;
+  auto it = physicalIds.find(axisValue);
+  if (it != physicalIds.end())
+    return ("p" + llvm::Twine(it->second)).str();
+  if (axisValue.getDefiningOp<DeviceLocalAxisOp>())
+    return "L";
+  return "?";
+}
+
+// A candidate's decisions in canonical form: for every logical axis, in the
+// search's own axis order, the factors bound to it, as `a0=p1:2|L:4;a1=...`.
+// Terms within an axis are sorted, since the order two factors were taken in
+// is not something the cost can see. No commas: this lands in a CSV cell.
+//
+// This is the coordinate an analysis over axes needs, and the metrics CSV had
+// none. A root-to-leaf childIndex sequence cannot serve, because it names the
+// option taken at each step and which options exist depends on the path taken
+// to reach that step.
+static std::string describeAssignment(const StrategySearchNode &node,
+                                      const PhysicalAxisIds &physicalIds) {
+  auto decisions = node.getPartialDecisions();
+  std::string out;
+  llvm::raw_string_ostream os(out);
+  for (auto [axisIndex, binding] : llvm::enumerate(decisions)) {
+    std::vector<std::string> terms;
+    for (TypedValue<AxisFactorType> factor : binding.second)
+      terms.push_back((describeFactorSource(factor, physicalIds) + ":" +
+                       llvm::Twine(getFactorExtent(factor)))
+                          .str());
+    std::sort(terms.begin(), terms.end());
+    if (axisIndex != 0)
+      os << ';';
+    os << 'a' << axisIndex << '=';
+    for (size_t i = 0; i < terms.size(); ++i) {
+      if (i != 0)
+        os << '|';
+      os << terms[i];
+    }
+  }
+  return out;
+}
+
+// Writes the logical-axis overlap graph: one row per axis and one per
+// overlapping pair. Axes are keyed by their index in the search's own order,
+// which is what the metrics CSV reports as `depth`, so the two files join on
+// it. Overlap is symmetric, so each pair is written once.
+static void writeAxisOverlapGraph(llvm::StringRef path,
+                                  const LogicalAxisOrder &axes,
+                                  const LogicalAxisOverlap &overlap) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    llvm::errs()
+        << "distributed-search-strategies: cannot write axis graph to '" << path
+        << "': " << ec.message() << "\n";
+    return;
+  }
+  llvm::DenseMap<TypedValue<LogicalMeshAxisType>, size_t> index;
+  for (auto [i, axis] : llvm::enumerate(axes))
+    index[axis] = i;
+
+  os << "kind,a,b\n";
+  for (auto [i, axis] : llvm::enumerate(axes))
+    os << "axis," << i << ',' << getAxisExtent(axis) << '\n';
+  for (auto [i, axis] : llvm::enumerate(axes)) {
+    auto neighbors = overlap.getOverlaps(axis);
+    if (!neighbors)
+      continue;
+    for (TypedValue<LogicalMeshAxisType> neighbor : *neighbors) {
+      auto it = index.find(neighbor);
+      // Each undirected edge once, and only between axes the search decides.
+      if (it == index.end() || it->second <= i)
+        continue;
+      os << "edge," << i << ',' << it->second << '\n';
+    }
+  }
+}
+
 /**
  * Sub-pass for the evaluation pipeline. Applies the decisions
  * from a provided search node by rewriting the axis.
@@ -892,6 +1000,9 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   StrategyCompleterBase &completer;
   SearchCostModel &costModel;
   SearchMetrics<StrategySearchNode> *metrics;
+  // Only read when metrics are collected, to name which physical axis each
+  // decided factor came from.
+  const PhysicalAxisIds *physicalIds;
   size_t numScored = 0;
   size_t numPlanFailures = 0;
   std::string firstPlanFailure;
@@ -902,12 +1013,13 @@ public:
                  bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
                  StrategyCompleterBase &completer, SearchCostModel &costModel,
-                 SearchMetrics<StrategySearchNode> *metrics = nullptr)
+                 SearchMetrics<StrategySearchNode> *metrics = nullptr,
+                 const PhysicalAxisIds *physicalIds = nullptr)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
         failOnBadCandidate(failOnBadCandidate),
         sawBadCandidate(sawBadCandidate), queue(queue), completer(completer),
-        costModel(costModel), metrics(metrics) {}
+        costModel(costModel), metrics(metrics), physicalIds(physicalIds) {}
 
   // Search statistics: candidates scored, how many of those lowered but had a
   // collective that could not be planned, and the first such reason.
@@ -959,7 +1071,10 @@ public:
         note = "collective planning failed: " + cost.collective.failureReason;
       }
       if (metrics)
-        metrics->recordCost(node, result, cost);
+        metrics->recordCost(
+            node, result, cost,
+            physicalIds ? describeAssignment(*completedNode, *physicalIds)
+                        : std::string());
     }
 
     if (dumpCandidates)
@@ -1008,6 +1123,9 @@ struct DistributedSearchStrategiesPass
     // TODO: order axis search order by importance
     auto axes =
         std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
+    PhysicalAxisIds physicalIds = indexPhysicalAxes(physicalAxes);
+    if (!axisGraphOut.empty())
+      writeAxisOverlapGraph(axisGraphOut, *axes, overlap);
     auto decisions = AxisMappingReplayTree::makeRoot();
 
     auto initialNode = std::make_shared<StrategySearchNode>(axes, decisions);
@@ -1017,24 +1135,24 @@ struct DistributedSearchStrategiesPass
         progressLogger;
     if (logProgress) {
       std::size_t totalAxes = axes->size();
-      progressLogger = [totalAxes](llvm::ArrayRef<std::shared_ptr<StrategySearchNode>>
-                                        generation) {
-        std::size_t shallowest = generation.front()->getAxisIndex();
-        std::size_t deepest = shallowest;
-        for (const auto &node : generation) {
-          shallowest = std::min(shallowest, node->getAxisIndex());
-          deepest = std::max(deepest, node->getAxisIndex());
-        }
-        llvm::errs() << "distributed-search-strategies: beam turnover ("
-                     << generation.size() << " candidate(s)), axis depth "
-                     << shallowest << "-" << deepest << " of " << totalAxes
-                     << "\n";
-      };
+      progressLogger =
+          [totalAxes](
+              llvm::ArrayRef<std::shared_ptr<StrategySearchNode>> generation) {
+            std::size_t shallowest = generation.front()->getAxisIndex();
+            std::size_t deepest = shallowest;
+            for (const auto &node : generation) {
+              shallowest = std::min(shallowest, node->getAxisIndex());
+              deepest = std::max(deepest, node->getAxisIndex());
+            }
+            llvm::errs() << "distributed-search-strategies: beam turnover ("
+                         << generation.size() << " candidate(s)), axis depth "
+                         << shallowest << "-" << deepest << " of " << totalAxes
+                         << "\n";
+          };
     }
     std::unique_ptr<SearchMetrics<StrategySearchNode>> metrics;
     if (!metricsOut.empty())
-      metrics =
-          std::make_unique<SearchMetrics<StrategySearchNode>>(metricsOut);
+      metrics = std::make_unique<SearchMetrics<StrategySearchNode>>(metricsOut);
     // Ranks need a whole generation, which only the queue sees.
     auto generationCallback = progressLogger;
     if (metrics) {
@@ -1050,15 +1168,15 @@ struct DistributedSearchStrategiesPass
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(beamSize,
                                                           generationCallback);
     queue.push(initialNode);
-    StrategyExplorer explorer(overlap, builder, physicalAxes,
-                              moduleOp.getLoc(), logProgress);
+    StrategyExplorer explorer(overlap, builder, physicalAxes, moduleOp.getLoc(),
+                              logProgress);
     StrategyInOrderCompleter completer(overlap, builder, physicalAxes,
                                        moduleOp.getLoc());
     bool sawBadCandidate = false;
     SummedCostModel costModel(kflopCoeff, opIntercept);
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
-                          failOnBadCandidate, sawBadCandidate, queue,
-                          completer, costModel, metrics.get());
+                          failOnBadCandidate, sawBadCandidate, queue, completer,
+                          costModel, metrics.get(), &physicalIds);
 
     BeamSearchDriver<StrategySearchNode> driver(queue, scorer, explorer,
                                                 metrics.get());
@@ -1160,7 +1278,6 @@ struct DistributedSearchStrategiesPass
                          pipelineOk, node->score);
       }
     }
-
 
     if (dumpBest) {
       if (best) {
