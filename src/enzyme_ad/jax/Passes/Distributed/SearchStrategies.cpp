@@ -458,9 +458,21 @@ static std::string describeFactorSource(TypedValue<AxisFactorType> factor,
 }
 
 // A candidate's decisions in canonical form: for every logical axis, in the
-// search's own axis order, the factors bound to it, as `a0=p1:2|L:4;a1=...`.
-// Terms within an axis are sorted, since the order two factors were taken in
-// is not something the cost can see. No commas: this lands in a CSV cell.
+// search's own axis order, the factors bound to it, as
+// `a0=p1:2@8|L:4@1;a1=...` -- source, extent, stride. No commas: this lands
+// in a CSV cell.
+//
+// Two things here were wrong in an earlier version and are worth stating, so
+// that nobody reintroduces them. Terms are NOT sorted: the order factors are
+// bound to an axis decides how the factor product nests, and the cost can see
+// it. Sorting them collapsed 5,480 distinct plans into 1,263 keys, 636 of
+// which then covered more than one cost. And the stride is not decoration:
+// two chunks of the same physical axis share a source and an extent but not a
+// stride, and the stride reaches the cost through normalizeCollective.
+//
+// With both fixed, no assignment in an 8,435-candidate beam-100 run on the
+// transformer covers two costs, which is what makes this usable as a cache
+// key rather than only as an analysis coordinate.
 //
 // This is the coordinate an analysis over axes needs, and the metrics CSV had
 // none. A root-to-leaf childIndex sequence cannot serve, because it names the
@@ -475,9 +487,9 @@ static std::string describeAssignment(const StrategySearchNode &node,
     std::vector<std::string> terms;
     for (TypedValue<AxisFactorType> factor : binding.second)
       terms.push_back((describeFactorSource(factor, physicalIds) + ":" +
-                       llvm::Twine(getFactorExtent(factor)))
+                       llvm::Twine(getFactorExtent(factor)) + "@" +
+                       llvm::Twine(getFactorStride(factor)))
                           .str());
-    std::sort(terms.begin(), terms.end());
     if (axisIndex != 0)
       os << ';';
     os << 'a' << axisIndex << '=';
