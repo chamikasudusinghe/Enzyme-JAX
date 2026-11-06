@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 #include <queue>
+#include <random>
 
 namespace mlir::enzyme::distributed {
 
@@ -19,6 +20,8 @@ std::optional<AxisOrder> parseAxisOrder(llvm::StringRef name) {
     return AxisOrder::Extent;
   if (name == "separator")
     return AxisOrder::Separator;
+  if (name == "shuffle")
+    return AxisOrder::Shuffle;
   return std::nullopt;
 }
 
@@ -318,9 +321,22 @@ void appendSeparatorOrder(const Graph &graph, llvm::ArrayRef<unsigned> members,
 } // namespace
 
 void reorderAxes(std::vector<TypedValue<LogicalMeshAxisType>> &axes,
-                 const LogicalAxisOverlap &overlap, AxisOrder order) {
+                 const LogicalAxisOverlap &overlap, AxisOrder order,
+                 unsigned seed) {
   if (order == AxisOrder::Ir || axes.size() < 2)
     return;
+
+  if (order == AxisOrder::Shuffle) {
+    // A fixed generator rather than the platform's default, so a permutation
+    // is reproducible from the command line on any machine -- the arm is a
+    // null distribution, and a null that cannot be replayed is not evidence.
+    std::mt19937 rng(seed);
+    for (size_t i = axes.size() - 1; i > 0; --i) {
+      std::uniform_int_distribution<size_t> pick(0, i);
+      std::swap(axes[i], axes[pick(rng)]);
+    }
+    return;
+  }
 
   if (order == AxisOrder::Extent) {
     // Stable, so equal extents keep declaration order.

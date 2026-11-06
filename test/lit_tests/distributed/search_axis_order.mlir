@@ -7,6 +7,12 @@
 // RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh2 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 1>]"' --distributed-search-strategies="beam-size=2 axis-order=separator axis-graph-out=%t.separator.csv" %s -o /dev/null
 // RUN: FileCheck --input-file=%t.separator.csv --check-prefix=SEP %s
 
+// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh2 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 1>]"' --distributed-search-strategies="search-strategy=random search-samples=4 search-seed=0 axis-order=shuffle axis-graph-out=%t.shuf0.csv" %s -o /dev/null
+// RUN: FileCheck --input-file=%t.shuf0.csv --check-prefix=SHUF0 %s
+
+// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh2 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 1>]"' --distributed-search-strategies="search-strategy=random search-samples=4 search-seed=7 axis-order=shuffle axis-graph-out=%t.shuf7.csv" %s -o /dev/null
+// RUN: FileCheck --input-file=%t.shuf7.csv --check-prefix=SHUF7 %s
+
 // RUN: not enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh2 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 1>]"' --distributed-search-strategies="beam-size=2 axis-order=nonsense" %s -o /dev/null 2>&1 | FileCheck --check-prefix=BADNAME %s
 
 // The order the search decides axes in is not a tie-break: setupNextAxis
@@ -71,10 +77,32 @@
 // SEP-NEXT: edge,4,5
 // SEP-NOT:  edge
 
+// The null arm. `shuffle` exists so that `extent` and `separator` have
+// something to beat other than declaration order: without it, "separator finds
+// better plans than ir" cannot be told apart from "ir is a bad order and
+// anything else beats it". Two seeds are pinned rather than one, which is what
+// shows the permutation is driven by search-seed -- a null arm that silently
+// produced one fixed order would be a second constant, not a distribution.
+// SHUF0:      kind,a,b
+// SHUF0-NEXT: axis,0,8
+// SHUF0-NEXT: axis,1,8
+// SHUF0-NEXT: axis,2,16
+// SHUF0-NEXT: axis,3,16
+// SHUF0-NEXT: axis,4,8
+// SHUF0-NEXT: axis,5,8
+
+// SHUF7:      kind,a,b
+// SHUF7-NEXT: axis,0,16
+// SHUF7-NEXT: axis,1,8
+// SHUF7-NEXT: axis,2,16
+// SHUF7-NEXT: axis,3,8
+// SHUF7-NEXT: axis,4,8
+// SHUF7-NEXT: axis,5,8
+
 // An unknown name is reported against the option rather than silently falling
-// back to one of the three, since a typo would otherwise be measured as a
+// back to one of the four, since a typo would otherwise be measured as a
 // result.
-// BADNAME: axis-order must be 'ir', 'extent' or 'separator', got 'nonsense'
+// BADNAME: axis-order must be 'ir', 'extent', 'separator' or 'shuffle', got 'nonsense'
 
 module @two_blocks {
   sdy.mesh @mesh = <["x"=2]>

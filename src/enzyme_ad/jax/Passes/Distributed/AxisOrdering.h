@@ -33,6 +33,13 @@ namespace mlir::enzyme::distributed {
  *    one of those axes sits at degree 4 of 14 -- extent predicted the coupling
  *    where graph position did not.
  *
+ *  - `Shuffle`: a seeded random permutation. This is the null, not a proposal:
+ *    the other two are only interesting if they beat an arbitrary reordering,
+ *    and without it a result like "separator beats declaration order" cannot
+ *    distinguish a good order from declaration order simply being a bad one.
+ *    It is driven by `search-seed`, so seeds give independent permutations and
+ *    the arm has a distribution rather than a single draw.
+ *
  *  - `Separator`: a minimum vertex separator first, then each block it leaves,
  *    recursively. Conditioning on a separator renders the remaining blocks
  *    conditionally independent, so this is the one order in which no later
@@ -50,7 +57,7 @@ namespace mlir::enzyme::distributed {
  * dense-blob limit that defeated the other two mechanisms in exp 0017, and it
  * is a property of the programs, not of this code.
  */
-enum class AxisOrder { Ir, Extent, Separator };
+enum class AxisOrder { Ir, Extent, Separator, Shuffle };
 
 // Parses the `axis-order` option. std::nullopt for an unrecognised name, so the
 // caller can report it against the option rather than silently picking one.
@@ -59,8 +66,10 @@ std::optional<AxisOrder> parseAxisOrder(llvm::StringRef name);
 // Permutes `axes` in place. Every ordering is a permutation of the input and
 // keeps declaration order as its tie-break, so a run is reproducible from its
 // command line and `Ir` leaves the vector untouched.
+// `seed` is used only by `Shuffle`; the other orders are deterministic.
 void reorderAxes(std::vector<TypedValue<LogicalMeshAxisType>> &axes,
-                 const LogicalAxisOverlap &overlap, AxisOrder order);
+                 const LogicalAxisOverlap &overlap, AxisOrder order,
+                 unsigned seed = 0);
 
 } // namespace mlir::enzyme::distributed
 

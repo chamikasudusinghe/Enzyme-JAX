@@ -1166,12 +1166,12 @@ struct DistributedSearchStrategiesPass
     std::optional<AxisOrder> order = parseAxisOrder(axisOrder);
     if (!order) {
       moduleOp.emitError()
-          << "distributed-search-strategies: axis-order must be 'ir', 'extent' "
-             "or 'separator', got '"
+          << "distributed-search-strategies: axis-order must be 'ir', "
+             "'extent', 'separator' or 'shuffle', got '"
           << axisOrder << "'";
       return signalPassFailure();
     }
-    reorderAxes(logicalAxes, overlap, *order);
+    reorderAxes(logicalAxes, overlap, *order, searchSeed);
 
     auto axes =
         std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
