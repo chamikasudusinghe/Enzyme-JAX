@@ -37,6 +37,9 @@ public:
                   llvm::StringRef assignment = {}) {
     evaluations++;
     Record &r = recordFor(node);
+    if (r.firstEval == std::numeric_limits<size_t>::max())
+      r.firstEval = evaluations - 1;
+    r.evalCount++;
     r.score = score;
     r.cost = cost;
     r.hasCost = true;
@@ -134,6 +137,14 @@ private:
     // not depend on the path taken to reach the assignment, which is what an
     // analysis over axes rather than over decision steps needs.
     std::string assignment;
+    // Scorer-call index of this node's first pricing, and how many times it was
+    // priced. Rows are written in generation order, so without these the order
+    // the search actually evaluated candidates in is not recoverable -- and an
+    // incumbent-relative question ("was this candidate already beaten when it
+    // was priced?") can only be asked in evaluation order. evalCount is
+    // separate because MCTS re-scores a node on every visit through it.
+    size_t firstEval = std::numeric_limits<size_t>::max();
+    size_t evalCount = 0;
   };
 
   std::string path;
@@ -168,7 +179,8 @@ private:
     os << "id,parent_id,child_index,depth,finalized,is_best,score,collective,"
           "compute,total,num_collectives,num_kernels,plan_failed,best_rank,"
           "worst_rank,generations,surrogate,collective_bytes,"
-          "collective_bytes_x_participants,assignment\n";
+          "collective_bytes_x_participants,assignment,first_eval,"
+          "eval_count\n";
     for (const Record &r : records) {
       os << r.id << ',' << r.parentId << ',' << r.childIndex << ',' << r.depth
          << ',' << (r.finalized ? 1 : 0) << ',' << (r.isBest ? 1 : 0) << ',';
@@ -194,7 +206,10 @@ private:
            << r.cost.collectiveBytesXParticipants;
       else
         os << ',';
-      os << ',' << r.assignment << '\n';
+      os << ',' << r.assignment << ',';
+      if (r.evalCount)
+        os << r.firstEval;
+      os << ',' << r.evalCount << '\n';
     }
     // Not a data row. MCTS re-scores nodes, so rows understate evaluations.
     os << "# evaluations=" << evaluations

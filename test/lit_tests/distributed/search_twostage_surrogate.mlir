@@ -4,18 +4,22 @@
 // RUN: awk -F, '$10 != "" { print $7 }' %t.nopool.csv | sort > %t.nopool.scores
 // RUN: diff %t.random.scores %t.nopool.scores
 // RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh448 device_target \"cpu\" axes [!distributed.physical_comm_axis<4, 32>,!distributed.physical_comm_axis<4, 8>, !distributed.physical_comm_axis<8, 1>]"' --distributed-search-strategies="search-strategy=twostage search-samples=200 surrogate-train=50 surrogate-pool=3000 search-seed=1 kflop-coeff=0.5 metrics-out=%t.csv" %s -o /dev/null
-// RUN: FileCheck --input-file=%t.csv --check-prefix=POSITIVE %s
+// RUN: awk -F, 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "surrogate") c = i; next } $c != "" { print $c }' %t.csv > %t.surrogate
+// RUN: FileCheck --input-file=%t.surrogate --check-prefix=POSITIVE --implicit-check-not='{{^-}}' %s
 
 // With the pool equal to K there is nothing to select from, so two-stage
 // scores exactly the rollouts random does. Compare every score, not just the
 // best: on this input both find their best among the shared training
 // rollouts, so the best alone would not notice a broken pool.
 
-// The log target keeps every surrogate prediction positive. The surrogate is
-// the fourth-last column, ahead of the two byte counts and the assignment;
-// at least one row has one and none is negative.
-// POSITIVE: ,{{[0-9.e+]+}},{{[0-9]+}},{{[0-9]+}},{{[^,]*}}{{$}}
-// POSITIVE-NOT: ,-{{[0-9.e+]+}},{{[0-9]+}},{{[0-9]+}},{{[^,]*}}{{$}}
+// The log target keeps every surrogate prediction positive: at least one row
+// carries a prediction, and no prediction is negative.
+//
+// The column is located by header name rather than by position. Pinning it as
+// "the fourth-last field" broke twice as columns were appended -- once for
+// `assignment`, once for `first_eval`/`eval_count` -- and where the column sits
+// is not the property under test.
+// POSITIVE: {{^[0-9]}}
 
 module @attention {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>
