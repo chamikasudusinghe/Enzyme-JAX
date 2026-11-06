@@ -11,6 +11,15 @@
 // unsound. Pinning the whole file rather than a few lines is deliberate: the
 // absence of an edge is the property under test, and only an exact match
 // shows an absence.
+//
+// The scope rows are why the pair rows are not enough. Each triangle above is
+// not three two-axis factors: it is one three-axis collective input scope, one
+// three-axis kernel scope, and one two-axis collective output scope. The
+// pairwise projection is identical in either reading, so a cost term cannot be
+// attributed to the decisions in its scope from the edges alone, which is what
+// these rows are for. The collective's input and output meshes are separate
+// index spaces and so are separate scopes, which is why axis 4 appears in
+// scope 0 but not in scope 1.
 
 // CHECK:      kind,a,b
 // CHECK-NEXT: axis,0,8
@@ -26,6 +35,30 @@
 // CHECK-NEXT: edge,2,5
 // CHECK-NEXT: edge,3,4
 // CHECK-NOT:  edge
+
+// CHECK:      scope,0,collective_in
+// CHECK-NEXT: member,0,0
+// CHECK-NEXT: member,0,3
+// CHECK-NEXT: member,0,4
+// CHECK-NEXT: scope,1,collective_out
+// CHECK-NEXT: member,1,0
+// CHECK-NEXT: member,1,3
+// CHECK-NEXT: scope,2,collective_in
+// CHECK-NEXT: member,2,1
+// CHECK-NEXT: member,2,2
+// CHECK-NEXT: member,2,5
+// CHECK-NEXT: scope,3,collective_out
+// CHECK-NEXT: member,3,1
+// CHECK-NEXT: member,3,2
+// CHECK-NEXT: scope,4,kernel
+// CHECK-NEXT: member,4,0
+// CHECK-NEXT: member,4,3
+// CHECK-NEXT: member,4,4
+// CHECK-NEXT: scope,5,kernel
+// CHECK-NEXT: member,5,1
+// CHECK-NEXT: member,5,2
+// CHECK-NEXT: member,5,5
+// CHECK-NOT:  scope
 
 module @two_blocks {
   sdy.mesh @mesh = <["x"=2]>

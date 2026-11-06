@@ -33,7 +33,10 @@ resolveLogicalAxes(ValueRange factorGroups) {
 } // namespace
 
 void LogicalAxisOverlap::addMutualOverlaps(
+    Scope::Kind kind, Operation *op,
     llvm::ArrayRef<TypedValue<LogicalMeshAxisType>> axes) {
+  if (!axes.empty())
+    scopes.push_back(Scope{kind, op, llvm::to_vector(axes)});
   for (size_t i = 0; i < axes.size(); ++i)
     for (size_t j = i + 1; j < axes.size(); ++j)
       addOverlap(axes[i], axes[j]);
@@ -44,12 +47,15 @@ LogicalAxisOverlap::LogicalAxisOverlap(ModuleOp moduleOp) {
   moduleOp.walk([&](DistributedCollectiveOp collective) {
     // LHS and RHS meshes are separate index spaces, so axes only overlap
     // within their own side.
-    addMutualOverlaps(resolveLogicalAxes(collective.getInputMesh()));
-    addMutualOverlaps(resolveLogicalAxes(collective.getOutputMesh()));
+    addMutualOverlaps(Scope::Kind::CollectiveIn, collective,
+                      resolveLogicalAxes(collective.getInputMesh()));
+    addMutualOverlaps(Scope::Kind::CollectiveOut, collective,
+                      resolveLogicalAxes(collective.getOutputMesh()));
   });
 
   moduleOp.walk([&](DistributedKernelOp kernel) {
-    addMutualOverlaps(resolveLogicalAxes(kernel.getPartitioningAxes()));
+    addMutualOverlaps(Scope::Kind::Kernel, kernel,
+                      resolveLogicalAxes(kernel.getPartitioningAxes()));
   });
 }
 

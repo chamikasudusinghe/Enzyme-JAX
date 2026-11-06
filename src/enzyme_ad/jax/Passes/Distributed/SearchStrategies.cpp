@@ -502,10 +502,17 @@ static std::string describeAssignment(const StrategySearchNode &node,
   return out;
 }
 
-// Writes the logical-axis overlap graph: one row per axis and one per
-// overlapping pair. Axes are keyed by their index in the search's own order,
-// which is what the metrics CSV reports as `depth`, so the two files join on
-// it. Overlap is symmetric, so each pair is written once.
+// Writes the logical-axis overlap graph: one row per axis, one per overlapping
+// pair, and one per factor scope with one `member` row per axis in it. Axes are
+// keyed by their index in the search's own order, which is what the metrics CSV
+// reports as `depth`, so the two files join on it. Overlap is symmetric, so
+// each pair is written once.
+//
+// The scopes are not derivable from the pairs. A triangle is either one
+// three-axis scope or three two-axis ones, and a one-axis scope produces no
+// pair at all, so anything attributing a cost term to the decisions in its
+// scope has to read these rows rather than the edges. The pair rows stay
+// because every analysis written so far reads them.
 static void writeAxisOverlapGraph(llvm::StringRef path,
                                   const LogicalAxisOrder &axes,
                                   const LogicalAxisOverlap &overlap) {
@@ -535,6 +542,29 @@ static void writeAxisOverlapGraph(llvm::StringRef path,
         continue;
       os << "edge," << i << ',' << it->second << '\n';
     }
+  }
+
+  // Scopes keep module walk order, so the ids are stable across runs. Members
+  // are written in axis-index order rather than the order they were resolved
+  // in, so the rows are comparable between programs. An axis the search does
+  // not decide is dropped, exactly as it is for edges; a scope left with
+  // nothing is skipped, since it then constrains no decision this search makes.
+  size_t scopeId = 0;
+  for (const LogicalAxisOverlap::Scope &scope : overlap.getScopes()) {
+    llvm::SmallVector<size_t> members;
+    for (TypedValue<LogicalMeshAxisType> axis : scope.axes) {
+      auto it = index.find(axis);
+      if (it != index.end())
+        members.push_back(it->second);
+    }
+    if (members.empty())
+      continue;
+    llvm::sort(members);
+    os << "scope," << scopeId << ',' << LogicalAxisOverlap::kindName(scope.kind)
+       << '\n';
+    for (size_t member : members)
+      os << "member," << scopeId << ',' << member << '\n';
+    ++scopeId;
   }
 }
 
