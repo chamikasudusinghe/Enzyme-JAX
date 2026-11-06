@@ -437,7 +437,8 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
     Option<"surrogatePool", "surrogate-pool", "unsigned", "0", "For search-strategy=twostage: how many candidates to rank with the surrogate before exactly evaluating the best K. Ranking needs no IR lowering, so the pool should exceed K. 0 means 10x K. Default: 0">,
     Option<"surrogatePrior", "surrogate-prior", "double", "0.0", "Weight of a surrogate prior on MCTS's UCB score, PUCT-style. 0 leaves MCTS unchanged. Default: 0.0">,
     Option<"surrogateDump", "surrogate-dump", "std::string", "\"\"", "Write the fitted surrogate weights and their training data to this path, so the fit can be checked against another solver. Default: empty">,
-    Option<"surrogateTarget", "surrogate-target", "std::string", "\"log\"", "What the surrogate regresses on: 'log', which keeps every prediction positive, or 'linear'. Default: log">
+    Option<"surrogateTarget", "surrogate-target", "std::string", "\"log\"", "What the surrogate regresses on: 'log', which keeps every prediction positive, or 'linear'. Default: log">,
+    Option<"axisOrder", "axis-order", "std::string", "\"ir\"", "The order the search decides logical axes in. 'ir' is declaration order, which is what the search did before this option existed. 'extent' takes the largest extent first, so the decision with the largest effect on the cost is made while the feasible set is least constrained. 'separator' takes a minimum vertex separator of the overlap graph first and then each block it leaves, recursively, which is the one order in which no later decision faces cross-block contention. Order matters because setupNextAxis subtracts only overlapping axes' bindings, so an axis decided earlier claims physical factors an overlapping axis decided later cannot have. Default: ir">
   ];
 }
 

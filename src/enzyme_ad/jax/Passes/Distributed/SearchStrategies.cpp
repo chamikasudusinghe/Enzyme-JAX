@@ -1,3 +1,4 @@
+#include "src/enzyme_ad/jax/Passes/Distributed/AxisOrdering.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/BeamSearchDriver.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/LogicalAxisOverlap.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
@@ -1162,7 +1163,16 @@ struct DistributedSearchStrategiesPass
     llvm::SmallVector<SharedOpRef<AxisFactorOp>> physicalAxes =
         findAllPhysicalAxes(moduleOp, builder, moduleOp.getLoc());
 
-    // TODO: order axis search order by importance
+    std::optional<AxisOrder> order = parseAxisOrder(axisOrder);
+    if (!order) {
+      moduleOp.emitError()
+          << "distributed-search-strategies: axis-order must be 'ir', 'extent' "
+             "or 'separator', got '"
+          << axisOrder << "'";
+      return signalPassFailure();
+    }
+    reorderAxes(logicalAxes, overlap, *order);
+
     auto axes =
         std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
     PhysicalAxisIds physicalIds = indexPhysicalAxes(physicalAxes);
